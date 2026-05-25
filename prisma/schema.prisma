@@ -1,0 +1,285 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client-js"
+  engineType = "binary"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+enum Role {
+  SUPER_ADMIN
+  FINANCE
+  EMPLOYEE
+}
+
+enum CurrencyCode {
+  USD
+  HKD
+  CNY
+}
+
+enum EmploymentStatus {
+  ACTIVE
+  TERMINATED
+}
+
+enum VestingStatus {
+  UNVESTED
+  VESTED
+  FORFEITED
+}
+
+enum VestingType {
+  STANDARD_FOUR_YEAR_ONE_YEAR_CLIFF
+  IMMEDIATE
+  CUSTOM_INSTALLMENTS
+}
+
+enum ExerciseRequestStatus {
+  PENDING
+  FUNDED
+  COMPLETED
+}
+
+enum ChangeRequestType {
+  EMPLOYEE_UPDATE
+  EMPLOYEE_DELETE
+  GRANT_CREATE
+  GRANT_UPDATE
+  GRANT_DELETE
+  DEPARTMENT_UPDATE
+  DEPARTMENT_DELETE
+}
+
+enum ChangeRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  APPLIED
+}
+
+enum ChangeRequestEventAction {
+  SUBMITTED
+  APPROVED
+  REJECTED
+  APPLIED
+}
+
+enum UsdtChain {
+  BNB
+  TRX
+}
+
+model User {
+  id        String   @id @default(cuid())
+  account   String   @unique
+  email     String?  @unique
+  passwordHash String
+  role      Role     @default(EMPLOYEE)
+  sessionVersion Int @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  employee Employee?
+
+  requestedChangeRequests ChangeRequest[] @relation("requestedBy")
+  decidedChangeRequests   ChangeRequest[] @relation("decidedBy")
+  changeRequestEvents     ChangeRequestEvent[]
+}
+
+model GlobalSettings {
+  id                 String   @id @default(cuid())
+  brandLogoDataUrl   String   @default("")
+  companyName        String   @default("")
+  companySharePrice  Decimal  @default(7.00)
+  useManualCompanySharePrice Boolean @default(false)
+  manualCompanySharePrice Decimal?
+  manualCompanySharePriceUpdatedAt DateTime?
+  sharePriceAutoRefreshedAt DateTime?
+  sharePriceTicker   String   @default("")
+  sharePriceCurrency CurrencyCode @default(USD)
+  sharePriceAvg30Usd Decimal?
+  usdtBnbAddress     String   @default("")
+  usdtTrxAddress     String   @default("")
+  totalOptionPoolShares Int
+  departmentsCsv     String   @default("")
+  terminationOptionExpiryDays Int @default(90)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+}
+
+model SharePriceHistory {
+  id        String       @id @default(cuid())
+  ticker    String
+  currency  CurrencyCode
+  date      String
+  close     Decimal
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  @@unique([ticker, date])
+  @@index([ticker, date])
+}
+
+model Department {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  targetChangeRequests ChangeRequest[] @relation("targetDepartment")
+}
+
+model Employee {
+  id         String           @id @default(cuid())
+  name       String
+  department String
+  startDate  DateTime
+  status     EmploymentStatus @default(ACTIVE)
+  terminatedAt DateTime?
+  userId     String?          @unique
+  user       User?            @relation(fields: [userId], references: [id], onDelete: SetNull)
+  createdAt  DateTime         @default(now())
+  updatedAt  DateTime         @updatedAt
+
+  grants           Grant[]
+  exerciseRequests ExerciseRequest[]
+  vestingRecords   VestingRecord[]
+  targetChangeRequests ChangeRequest[] @relation("targetEmployee")
+
+  @@index([department])
+  @@index([name])
+  @@index([status])
+}
+
+model Grant {
+  id          String   @id @default(cuid())
+  agreementNo String   @unique
+  employeeId  String
+  employee    Employee @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  totalShares Int
+  grantDate   DateTime
+  strikePrice Decimal
+  lockupPeriodMonths Int @default(0)
+
+  vestingType VestingType @default(STANDARD_FOUR_YEAR_ONE_YEAR_CLIFF)
+  totalVestingDurationMonths Int?
+  vestingInstallments Int?
+
+  vestingYears  Int     @default(4)
+  cliffMonths   Int     @default(12)
+  cliffPercent  Decimal @default(0.25)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  vestingRecords VestingRecord[]
+  exerciseRequests ExerciseRequest[]
+  targetChangeRequests ChangeRequest[] @relation("targetGrant")
+
+  @@index([employeeId])
+  @@index([grantDate])
+}
+
+model ChangeRequest {
+  id              String              @id @default(cuid())
+  type            ChangeRequestType
+  status          ChangeRequestStatus @default(PENDING)
+
+  targetEmployeeId   String?
+  targetEmployee     Employee? @relation("targetEmployee", fields: [targetEmployeeId], references: [id], onDelete: SetNull)
+  targetGrantId      String?
+  targetGrant        Grant?    @relation("targetGrant", fields: [targetGrantId], references: [id], onDelete: SetNull)
+  targetDepartmentId String?
+  targetDepartment   Department? @relation("targetDepartment", fields: [targetDepartmentId], references: [id], onDelete: SetNull)
+
+  payload Json
+
+  requestedByUserId String
+  requestedByUser   User   @relation("requestedBy", fields: [requestedByUserId], references: [id], onDelete: Restrict)
+  decidedByUserId   String?
+  decidedByUser     User?  @relation("decidedBy", fields: [decidedByUserId], references: [id], onDelete: SetNull)
+  decidedAt         DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  events ChangeRequestEvent[]
+
+  @@index([status, createdAt])
+  @@index([type, createdAt])
+  @@index([requestedByUserId, createdAt])
+}
+
+model ChangeRequestEvent {
+  id              String                   @id @default(cuid())
+  changeRequestId String
+  changeRequest   ChangeRequest            @relation(fields: [changeRequestId], references: [id], onDelete: Cascade)
+  action          ChangeRequestEventAction
+  note            String?
+  createdByUserId String
+  createdByUser   User                     @relation(fields: [createdByUserId], references: [id], onDelete: Restrict)
+  createdAt       DateTime                 @default(now())
+
+  @@index([changeRequestId, createdAt])
+  @@index([action, createdAt])
+}
+
+model VestingRecord {
+  id         String        @id @default(cuid())
+  grantId    String
+  grant      Grant         @relation(fields: [grantId], references: [id], onDelete: Cascade)
+  employeeId String
+  employee   Employee      @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  vestDate   DateTime
+  shares     Int
+  status     VestingStatus @default(UNVESTED)
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+
+  @@unique([grantId, vestDate])
+  @@index([employeeId, vestDate])
+  @@index([status, vestDate])
+}
+
+model ExerciseRequest {
+  id               String                @id @default(cuid())
+  clientRequestId  String?               @unique
+  employeeId       String
+  employee         Employee              @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  grantId          String?
+  grant            Grant?                @relation(fields: [grantId], references: [id], onDelete: SetNull)
+  requestedShares  Int
+  totalCost        Decimal
+  paymentChain     UsdtChain?
+  paymentToAddress String?
+  paymentTxHash    String?
+  paymentProofDataUrl String?
+  paymentProofUploadedAt DateTime?
+  paymentProofUploadedByRole Role?
+  paymentProofConfirmedAt DateTime?
+  paymentProofConfirmedByRole Role?
+  paymentAmountUsdt Decimal?
+  paymentReceivedUsdt Decimal?
+  paymentCheckedAt DateTime?
+  paymentVerifiedAt DateTime?
+  paymentCheckError String?
+  paymentRaw       Json?
+  status           ExerciseRequestStatus @default(PENDING)
+  isBuybackOrCancel Boolean              @default(false)
+  lockupUntil      DateTime?
+  completedAt      DateTime?
+  createdAt        DateTime              @default(now())
+  updatedAt        DateTime              @updatedAt
+
+  @@unique([paymentChain, paymentTxHash])
+  @@index([status, createdAt])
+  @@index([employeeId, createdAt])
+  @@index([grantId, createdAt])
+}

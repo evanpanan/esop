@@ -25,9 +25,9 @@ export default function AdminTopNav({
   return (
     <>
       {variant !== "extrasOnly" ? (
-        <div className="rounded-2xl border border-black/5 bg-white/70 p-2 shadow-sm backdrop-blur-md transition-shadow hover:shadow-md">
+        <div className="rounded-2xl border border-black/5 bg-white p-2 shadow-sm transition-shadow hover:shadow-md">
           <div className="px-1">
-            <div className="rounded-xl border border-black/5 bg-white/70 p-1 backdrop-blur-md">
+            <div className="rounded-xl border border-black/5 bg-white p-1">
               <div className="relative flex min-w-0">
                 <span
                   className="pointer-events-none absolute left-0 top-0 h-9 rounded-lg bg-zinc-900 shadow-sm transition-transform duration-300"
@@ -54,7 +54,7 @@ export default function AdminTopNav({
       {variant !== "navOnly" && (quickActions.length > 0 || todoLines.length > 0) ? (
         <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-[1fr_320px]">
           {quickActions.length > 0 ? (
-            <div className="rounded-2xl border border-black/5 bg-white/80 p-3 shadow-sm transition-shadow hover:shadow-md">
+            <div className="rounded-2xl border border-black/5 bg-white p-3 shadow-sm transition-shadow hover:shadow-md">
               <div className="flex items-center justify-between gap-3">
                 <div className="text-xs font-medium text-zinc-900">{quickActionsTitle}</div>
                 <div className="text-[11px] text-zinc-500">常用</div>
@@ -64,7 +64,7 @@ export default function AdminTopNav({
                   <Link
                     key={`${it.href}:${it.label}`}
                     href={it.href}
-                    className="btn-press btn-ripple inline-flex h-12 touch-manipulation items-center justify-center rounded-2xl border border-black/5 bg-white/80 px-3 text-sm font-semibold text-zinc-900 active:scale-[0.98] sm:h-9 sm:rounded-xl sm:text-xs sm:font-medium sm:active:translate-y-[1px] sm:hover:bg-white"
+                    className="btn-press btn-ripple inline-flex h-12 touch-manipulation items-center justify-center rounded-2xl border border-black/5 bg-white px-3 text-sm font-semibold text-zinc-900 active:scale-[0.98] sm:h-9 sm:rounded-xl sm:text-xs sm:font-medium sm:active:translate-y-[1px]"
                     scroll={false}
                   >
                     {it.label}
@@ -75,13 +75,13 @@ export default function AdminTopNav({
           ) : null}
 
           {todoLines.length > 0 ? (
-            <div className="rounded-2xl border border-black/5 bg-white/80 p-3 shadow-sm transition-shadow hover:shadow-md">
+            <div className="rounded-2xl border border-black/5 bg-white p-3 shadow-sm transition-shadow hover:shadow-md">
               <div className="flex items-center justify-between gap-3">
                 <div className="text-xs font-medium text-zinc-900">{todoTitle}</div>
                 <div className="text-[11px] text-zinc-500">只显示待处理</div>
               </div>
               {visibleTodoLines.length === 0 ? (
-                <div className="mt-2 rounded-xl border border-black/5 bg-white/70 px-3 py-2 text-xs text-zinc-600">
+                <div className="mt-2 rounded-xl border border-black/5 bg-white px-3 py-2 text-xs text-zinc-600">
                   暂无待办
                 </div>
               ) : (

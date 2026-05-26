@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { createGrantWithVesting, matureVestingRecords, setEmployeeStatus, verifyUsdtPaymentByTxHash } from "@/lib/esop";
-import { Prisma } from "@prisma/client";
+import { Prisma, Role } from "@prisma/client";
 import { DebouncedSearch } from "@/app/DebouncedSearch";
 import { redirect } from "next/navigation";
 import Link from "next/link";
@@ -19,6 +19,7 @@ import AdminFocusScroll from "./AdminFocusScroll";
 import AdminHeader from "./AdminHeader";
 import AdminTopNav from "./AdminTopNav";
 import AdminCurrencyLangSwitch from "./AdminCurrencyLangSwitch";
+import EmployeePicker from "./EmployeePicker";
 import { FileText, PencilLine, Trash2 } from "lucide-react";
 import { BUSINESS_TIMEZONE, ymdInTimeZone } from "@/lib/datetime";
 import { fileToImageDataUrl, readImageFileFromFormData } from "@/lib/imageDataUrl";
@@ -408,10 +409,10 @@ function requestRiskLevel(input: {
         ? String(settings?.usdtTrxAddress ?? "").trim()
         : "";
 
-  const missing = !chain || !toAddr || (!tx && !proof);
-  const mismatch = Boolean(expected && toAddr && expected !== toAddr);
-
   const expectedUsdt = (r.paymentAmountUsdt ?? null) as Prisma.Decimal | null;
+  const needPay = Boolean(expectedUsdt && expectedUsdt.gt(0));
+  const missing = needPay ? !chain || !toAddr : false;
+  const mismatch = needPay ? Boolean(expected && toAddr && expected !== toAddr) : false;
   const receivedUsdt = (r.paymentReceivedUsdt ?? null) as unknown as Prisma.Decimal | null;
   const hasDiff =
     expectedUsdt && expectedUsdt.gt(0) && receivedUsdt && receivedUsdt.gt(0)
@@ -456,23 +457,26 @@ function requestTags(input: {
         : "";
 
   const tags: string[] = [];
-  if (!tx && !proof) tags.push("missing_tx");
-  if (expectedAddr && toAddr && expectedAddr !== toAddr) tags.push("addr_mismatch");
+  const expectedUsdt = (r.paymentAmountUsdt ?? null) as Prisma.Decimal | null;
+  const needPay = Boolean(expectedUsdt && expectedUsdt.gt(0));
+  if (needPay && expectedAddr && toAddr && expectedAddr !== toAddr) tags.push("addr_mismatch");
   if (proof && !proofConfirmedAt) tags.push("proof_pending");
 
-  const expectedUsdt = (r.paymentAmountUsdt ?? null) as Prisma.Decimal | null;
   const receivedUsdt = (r.paymentReceivedUsdt ?? null) as unknown as Prisma.Decimal | null;
-  if (expectedUsdt && expectedUsdt.gt(0) && receivedUsdt && receivedUsdt.gt(0)) {
-    const diffPct = Number(receivedUsdt.sub(expectedUsdt).div(expectedUsdt).mul(100).toFixed(1));
+  if (needPay && receivedUsdt && receivedUsdt.gt(0)) {
+    const exp = expectedUsdt as Prisma.Decimal;
+    const diffPct = Number(receivedUsdt.sub(exp).div(exp).mul(100).toFixed(1));
     if (Math.abs(diffPct) >= 1) tags.push("diff_1");
   }
 
-  const ageHours = (Date.now() - new Date(r.createdAt).getTime()) / (60 * 60 * 1000);
-  if (ageHours >= 48) tags.push("stale");
+  if (needPay) {
+    const ageHours = (Date.now() - new Date(r.createdAt).getTime()) / (60 * 60 * 1000);
+    if (ageHours >= 48) tags.push("stale");
+  }
 
   const checkError = String(r.paymentCheckError ?? "").trim();
   const checkedAt = r.paymentCheckedAt ? new Date(String(r.paymentCheckedAt)).getTime() : 0;
-  if (checkedAt && checkError) tags.push("check_failed");
+  if (needPay && checkedAt && checkError) tags.push("check_failed");
 
   return tags;
 }
@@ -542,24 +546,32 @@ async function updateExerciseStatus(formData: FormData) {
       isBuybackOrCancel: true,
       grantId: true,
       paymentRaw: true,
+      paymentAmountUsdt: true,
       paymentVerifiedAt: true,
       paymentCheckError: true,
     },
   });
   if (!existing) redirect(adminUrl({ err: "NO_REQUEST", lang }));
 
+  const expectedUsdt = (existing.paymentAmountUsdt ?? null) as Prisma.Decimal | null;
+  const needPay = Boolean(expectedUsdt && expectedUsdt.gt(0));
+
   if (String(existing.status ?? "") === status) {
     redirect(withOk(returnTo, "EXERCISE_STATUS_UPDATED", { rid: id, nst: status }));
   }
-  if (existing.status !== "FUNDED") {
-    if (existing.status === "PENDING") redirect(withErr(returnTo, "MUST_FUND_BEFORE_COMPLETE"));
-    redirect(withErr(returnTo, "INVALID_STATUS_FLOW"));
-  }
-  if (!existing.paymentVerifiedAt || String(existing.paymentCheckError ?? "").trim()) {
-    redirect(withErr(returnTo, "PAYMENT_NOT_VERIFIED"));
+  if (needPay) {
+    if (existing.status !== "FUNDED") {
+      if (existing.status === "PENDING") redirect(withErr(returnTo, "MUST_FUND_BEFORE_COMPLETE"));
+      redirect(withErr(returnTo, "INVALID_STATUS_FLOW"));
+    }
+    if (!existing.paymentVerifiedAt || String(existing.paymentCheckError ?? "").trim()) {
+      redirect(withErr(returnTo, "PAYMENT_NOT_VERIFIED"));
+    }
   }
 
-  const data: { status: "COMPLETED"; lockupUntil?: Date | null } = {
+  const now = new Date();
+  const data: { status: "COMPLETED"; lockupUntil?: Date | null; completedAt?: Date | null; paymentCheckedAt?: Date | null; paymentVerifiedAt?: Date | null; paymentCheckError?: string | null } =
+    {
     status: "COMPLETED",
   };
 
@@ -573,9 +585,15 @@ async function updateExerciseStatus(formData: FormData) {
         : 0;
 
   if (!existing.isBuybackOrCancel && lockupMonths > 0) {
-    data.lockupUntil = addMonths(new Date(), lockupMonths);
+    data.lockupUntil = addMonths(now, lockupMonths);
   } else {
     data.lockupUntil = null;
+  }
+  data.completedAt = now;
+  if (!needPay) {
+    data.paymentCheckedAt = now;
+    data.paymentVerifiedAt = now;
+    data.paymentCheckError = null;
   }
 
   await prisma.exerciseRequest.update({ where: { id }, data });
@@ -637,6 +655,29 @@ async function checkExercisePayment(formData: FormData) {
   const toAddress = String(r.paymentToAddress ?? "").trim();
   const txHash = String(r.paymentTxHash ?? "").trim();
   const expectedUsdt = r.paymentAmountUsdt ?? null;
+  if (expectedUsdt && expectedUsdt.lte(0)) {
+    const now = new Date();
+    const alloc = readAllocationFromPaymentRaw(r.paymentRaw);
+    const allocLockupMax = alloc.reduce((m, a) => Math.max(m, Number(a.lockupPeriodMonths ?? 0)), 0);
+    const lockupMonths =
+      !r.isBuybackOrCancel && allocLockupMax > 0
+        ? allocLockupMax
+        : !r.isBuybackOrCancel && r.grantId
+          ? Number(((await prisma.grant.findUnique({ where: { id: r.grantId } })) as unknown as { lockupPeriodMonths?: number } | null)?.lockupPeriodMonths ?? 0)
+          : 0;
+    await prisma.exerciseRequest.update({
+      where: { id },
+      data: {
+        status: "COMPLETED",
+        completedAt: now,
+        lockupUntil: !r.isBuybackOrCancel && lockupMonths > 0 ? addMonths(now, lockupMonths) : null,
+        paymentCheckedAt: now,
+        paymentVerifiedAt: now,
+        paymentCheckError: null,
+      },
+    });
+    redirect(withOk(returnTo, "EXERCISE_STATUS_UPDATED", { rid: id, nst: "COMPLETED" }));
+  }
   if (!chain || (chain !== "BNB" && chain !== "TRX") || !toAddress || !txHash || !expectedUsdt) {
     await prisma.exerciseRequest.update({
       where: { id },
@@ -730,6 +771,140 @@ async function completeExerciseByProof(formData: FormData) {
     },
   });
   redirect(withOk(returnTo, "EXERCISE_STATUS_UPDATED", { rid: id, nst: "COMPLETED" }));
+}
+
+async function updateExercisePaymentMeta(formData: FormData) {
+  "use server";
+  const { userId, role } = await requireAdminRoles(["SUPER_ADMIN", "FINANCE"]);
+  const lang = parseLang(String(formData.get("lang") ?? "").trim() || undefined);
+  const id = String(formData.get("id") ?? "").trim();
+  const returnTo = safeReturnTo(String(formData.get("returnTo") ?? "")) ?? adminUrl({ lang });
+  const op = String(formData.get("op") ?? "").trim();
+  if (!id) redirect(withErr(returnTo, "INVALID_REQUEST"));
+
+  const existing = await prisma.exerciseRequest.findUnique({
+    where: { id },
+    select: {
+      id: true,
+      status: true,
+      isBuybackOrCancel: true,
+      paymentRaw: true,
+      paymentChain: true,
+      paymentTxHash: true,
+      paymentToAddress: true,
+      paymentProofDataUrl: true,
+      paymentProofUploadedAt: true,
+      paymentProofUploadedByRole: true,
+      paymentProofConfirmedAt: true,
+      paymentProofConfirmedByRole: true,
+    },
+  });
+  if (!existing || existing.isBuybackOrCancel) redirect(withErr(returnTo, "NO_REQUEST"));
+  if (existing.status === "COMPLETED") redirect(withErr(returnTo, "INVALID_STATUS_FLOW"));
+
+  const now = new Date();
+  const chainRaw = String(formData.get("chain") ?? "").trim();
+  const chain =
+    chainRaw === "BNB" || chainRaw === "TRX"
+      ? (chainRaw as "BNB" | "TRX")
+      : ((String(existing.paymentChain ?? "").trim() as "BNB" | "TRX" | "") || "BNB");
+  const txHash = String(formData.get("txHash") ?? "").trim();
+
+  const assertTxHash = (c: "BNB" | "TRX", v: string) => {
+    if (!v) return;
+    if (c === "BNB") {
+      if (!/^0x[a-fA-F0-9]{64}$/.test(v)) throw new Error("INVALID_TXHASH");
+      return;
+    }
+    if (!/^[a-fA-F0-9]{64}$/.test(v)) throw new Error("INVALID_TXHASH");
+  };
+
+  const settings = await prisma.globalSettings.findFirst({
+    orderBy: { createdAt: "desc" },
+    select: { usdtBnbAddress: true, usdtTrxAddress: true },
+  });
+  const toAddress =
+    chain === "BNB"
+      ? String(settings?.usdtBnbAddress ?? "").trim()
+      : String(settings?.usdtTrxAddress ?? "").trim();
+
+  let nextTx: string | null = existing.paymentTxHash ? String(existing.paymentTxHash) : null;
+  let nextChain: "BNB" | "TRX" | null = existing.paymentChain ? (String(existing.paymentChain) as "BNB" | "TRX") : null;
+  let nextTo: string | null = existing.paymentToAddress ? String(existing.paymentToAddress) : null;
+  let nextProof: string | null = existing.paymentProofDataUrl ? String(existing.paymentProofDataUrl) : null;
+  let nextProofUploadedAt: Date | null = existing.paymentProofUploadedAt ? new Date(existing.paymentProofUploadedAt) : null;
+  let nextProofUploadedByRole: RoleName | null = existing.paymentProofUploadedByRole ? (String(existing.paymentProofUploadedByRole) as RoleName) : null;
+  let nextProofConfirmedAt: Date | null = existing.paymentProofConfirmedAt ? new Date(existing.paymentProofConfirmedAt) : null;
+  let nextProofConfirmedByRole: RoleName | null = existing.paymentProofConfirmedByRole ? (String(existing.paymentProofConfirmedByRole) as RoleName) : null;
+
+  if (op === "clear_tx") {
+    nextTx = null;
+  } else if (op === "save_tx") {
+    if (txHash) {
+      try {
+        assertTxHash(chain, txHash);
+      } catch {
+        redirect(withErr(returnTo, "INVALID_TXHASH"));
+      }
+      nextTx = txHash;
+      nextChain = chain;
+      nextTo = toAddress || null;
+    } else {
+      nextTx = null;
+    }
+  } else if (op === "clear_proof") {
+    nextProof = null;
+    nextProofUploadedAt = null;
+    nextProofUploadedByRole = null;
+    nextProofConfirmedAt = null;
+    nextProofConfirmedByRole = null;
+  } else if (op === "upload_proof") {
+    const file = readImageFileFromFormData(formData, "paymentProof");
+    if (!file) redirect(withErr(returnTo, "MISSING_PAYMENT_PROOF"));
+    const paymentProofDataUrl = await fileToImageDataUrl(file, { maxBytes: 900 * 1024 });
+    nextProof = paymentProofDataUrl;
+    nextProofUploadedAt = now;
+    nextProofUploadedByRole = role;
+    nextProofConfirmedAt = null;
+    nextProofConfirmedByRole = null;
+  } else {
+    redirect(withErr(returnTo, "INVALID_REQUEST"));
+  }
+
+  const raw = jsonObject(existing.paymentRaw);
+  const adminEditsRaw = raw["adminEdits"];
+  const adminEdits = Array.isArray(adminEditsRaw) ? adminEditsRaw.slice(0, 50) : [];
+  adminEdits.push({
+    at: now.toISOString(),
+    uid: userId,
+    role,
+    op,
+    txBefore: String(existing.paymentTxHash ?? "") || null,
+    txAfter: nextTx,
+    proofBefore: Boolean(String(existing.paymentProofDataUrl ?? "").trim()),
+    proofAfter: Boolean(String(nextProof ?? "").trim()),
+  });
+
+  await prisma.exerciseRequest.update({
+    where: { id },
+    data: {
+      paymentChain: nextChain,
+      paymentToAddress: nextTo,
+      paymentTxHash: nextTx,
+      paymentProofDataUrl: nextProof,
+      paymentProofUploadedAt: nextProofUploadedAt,
+      paymentProofUploadedByRole: nextProofUploadedByRole as unknown as Role | null,
+      paymentProofConfirmedAt: nextProofConfirmedAt,
+      paymentProofConfirmedByRole: nextProofConfirmedByRole as unknown as Role | null,
+      paymentCheckedAt: null,
+      paymentVerifiedAt: null,
+      paymentCheckError: null,
+      paymentReceivedUsdt: null,
+      status: "PENDING",
+      paymentRaw: { ...raw, adminEdits } as unknown as Prisma.JsonObject,
+    },
+  });
+  redirect(withOk(returnTo, "EXERCISE_PAYMENT_UPDATED", { rid: id }));
 }
 
 async function uploadBuybackProof(formData: FormData) {
@@ -1876,6 +2051,8 @@ export default async function AdminDashboard({
     gid?: string;
     uid?: string;
     rid?: string;
+    pid?: string;
+    back?: string;
     nst?: string;
     okc?: string;
     failc?: string;
@@ -1911,6 +2088,8 @@ export default async function AdminDashboard({
   const okGrantId = (sp.gid ?? "").trim();
   const okUserId = (sp.uid ?? "").trim();
   const okRequestId = (sp.rid ?? "").trim();
+  const proofRequestId = (sp.pid ?? "").trim();
+  const proofBackRaw = (sp.back ?? "").trim();
   const okNextStatusRaw = (sp.nst ?? "").trim();
   const okNextStatus = okNextStatusRaw === "FUNDED" || okNextStatusRaw === "COMPLETED" ? okNextStatusRaw : "";
   const okOkCountRaw = (sp.okc ?? "").trim();
@@ -1952,6 +2131,7 @@ export default async function AdminDashboard({
       : "";
   const err = (sp.err ?? "").trim();
   const errMsg = (sp.em ?? "").trim();
+  const proofBack = safeReturnTo(proofBackRaw) ?? "/admin";
 
   const cookieStore = await cookies();
   const token = cookieStore.get("esop_session")?.value ?? "";
@@ -2407,6 +2587,69 @@ export default async function AdminDashboard({
           },
         })
       : [];
+
+  const grantHistoryExercises =
+    modal === "grant_history" && emp && grantHistoryGrants.length > 0
+      ? await prisma.exerciseRequest.findMany({
+          where: {
+            employeeId: emp,
+            isBuybackOrCancel: false,
+            grantId: { in: grantHistoryGrants.map((g) => g.id) },
+          },
+          orderBy: { createdAt: "desc" },
+          take: 200,
+          select: {
+            id: true,
+            grantId: true,
+            status: true,
+            requestedShares: true,
+            paymentChain: true,
+            paymentTxHash: true,
+            paymentProofDataUrl: true,
+            paymentProofUploadedAt: true,
+            paymentProofUploadedByRole: true,
+            paymentProofConfirmedAt: true,
+            paymentProofConfirmedByRole: true,
+            paymentVerifiedAt: true,
+            createdAt: true,
+            completedAt: true,
+          },
+        })
+      : [];
+
+  const grantHistoryExercisesByGrantId = new Map<string, typeof grantHistoryExercises>();
+  if (grantHistoryExercises.length > 0) {
+    for (const ex of grantHistoryExercises) {
+      const gid = String(ex.grantId ?? "").trim();
+      if (!gid) continue;
+      const list = grantHistoryExercisesByGrantId.get(gid) ?? [];
+      list.push(ex);
+      grantHistoryExercisesByGrantId.set(gid, list);
+    }
+  }
+
+  const proofViewRequest =
+    modal === "exercise_proof" && proofRequestId
+      ? await prisma.exerciseRequest.findFirst({
+          where: { id: proofRequestId, isBuybackOrCancel: false },
+          select: {
+            id: true,
+            status: true,
+            requestedShares: true,
+            paymentChain: true,
+            paymentTxHash: true,
+            paymentToAddress: true,
+            paymentProofDataUrl: true,
+            paymentProofUploadedAt: true,
+            paymentProofUploadedByRole: true,
+            paymentProofConfirmedAt: true,
+            paymentProofConfirmedByRole: true,
+            createdAt: true,
+            employee: { select: { name: true, department: true } },
+            grant: { select: { agreementNo: true } },
+          },
+        })
+      : null;
 
   const grantHistoryAuditByAgreementNo = new Map<
     string,
@@ -3798,6 +4041,17 @@ export default async function AdminDashboard({
         ].filter(Boolean),
         durationMs: 4500,
         clearKeys: ["ok", "rid", "nst"],
+        actions: [{ label: tr("继续", "繼續", "Continue"), href: baseAfterOkHref }],
+      };
+    }
+
+    if (ok === "EXERCISE_PAYMENT_UPDATED") {
+      return {
+        toastId: `EXERCISE_PAYMENT_UPDATED:${okRequestId || "unknown"}`,
+        title: tr("支付信息已更新", "支付資訊已更新", "Payment info updated"),
+        lines: [okRequestId ? tr(`申请编号：${okRequestId}`, `申請編號：${okRequestId}`, `Request ID: ${okRequestId}`) : ""].filter(Boolean),
+        durationMs: 4500,
+        clearKeys: ["ok", "rid"],
         actions: [{ label: tr("继续", "繼續", "Continue"), href: baseAfterOkHref }],
       };
     }
@@ -5249,10 +5503,12 @@ export default async function AdminDashboard({
   function renderWorkbenchExerciseActions(input: {
     id: string;
     paymentTxHash: string;
+    paymentAmountUsdt: Prisma.Decimal | null;
     status: string;
     hasEmployeeProof: boolean;
   }) {
-    const { id, paymentTxHash, status, hasEmployeeProof } = input;
+    const { id, paymentTxHash, paymentAmountUsdt, status, hasEmployeeProof } = input;
+    const isFree = Boolean(paymentAmountUsdt && paymentAmountUsdt.lte(0));
     return (
       <div className="mt-3 w-full sm:mt-0 sm:w-auto">
         {status === "COMPLETED" ? (
@@ -5263,6 +5519,15 @@ export default async function AdminDashboard({
           >
             已完成✓
           </button>
+        ) : isFree ? (
+          <form action={checkExercisePayment} className="contents" data-lock-submit="1">
+            <input type="hidden" name="lang" value={lang} />
+            <input type="hidden" name="id" value={id} />
+            <input type="hidden" name="returnTo" value={workbenchReturnTo} />
+            <button className="btn-press btn-ripple inline-flex h-11 w-full touch-manipulation items-center justify-center rounded-2xl bg-[#2563eb] px-3 text-xs font-semibold text-white active:scale-[0.98] sm:w-auto">
+              直接完成行权
+            </button>
+          </form>
         ) : paymentTxHash ? (
           <form action={checkExercisePayment} className="contents" data-lock-submit="1">
             <input type="hidden" name="lang" value={lang} />
@@ -5292,7 +5557,22 @@ export default async function AdminDashboard({
         )}
         {status === "COMPLETED" ? null : (
           <div className="mt-2 text-[11px] font-medium text-zinc-500">
-            {paymentTxHash ? "自动检查链上到账；确认成功后自动完成行权" : hasEmployeeProof ? "人工确认截图；确认后完成行权" : "员工未提交 TxHash 或截图"}
+            {isFree
+              ? "行权成本为 0：可直接完成行权"
+              : paymentTxHash
+                ? "自动检查链上到账；确认成功后自动完成行权"
+                : hasEmployeeProof
+                  ? "人工确认截图；确认后完成行权"
+                  : "员工未提交 TxHash 或截图"}
+            <div className="mt-1">
+              <Link
+                href={withModal(withParam(withParam(workbenchReturnTo, "pid", id), "back", workbenchReturnTo), "exercise_proof")}
+                scroll={false}
+                className="text-[#2563eb] underline decoration-[#2563eb]/20 underline-offset-2"
+              >
+                编辑支付信息
+              </Link>
+            </div>
           </div>
         )}
       </div>
@@ -5538,6 +5818,9 @@ export default async function AdminDashboard({
 
   function renderWorkbenchExerciseItem(r: (typeof pendingExercisesShown)[number]) {
     const avatarText = String(r.employee.name ?? "").trim().slice(0, 1) || "—";
+    const proofUrl = String((r as unknown as { paymentProofDataUrl?: unknown } | null)?.paymentProofDataUrl ?? "").trim();
+    const proofHas = Boolean(proofUrl);
+    const proofViewHref = withModal(withParam(withParam(workbenchReturnTo, "pid", r.id), "back", workbenchReturnTo), "exercise_proof");
     return (
       <div
         key={r.id}
@@ -5571,7 +5854,7 @@ export default async function AdminDashboard({
             </div>
             <div className="rounded-xl bg-[#f8fafc] px-3 py-2">
               <div className="text-[11px] font-semibold text-zinc-500">需支付额</div>
-              <div className="mt-0.5 truncate text-sm font-semibold text-[#059669]">
+              <div className="ui-sensitive mt-0.5 truncate text-sm font-semibold text-[#059669]">
                 {formatMoney(r.totalCost, currency, baseCurrency)}
               </div>
             </div>
@@ -5590,9 +5873,9 @@ export default async function AdminDashboard({
               const toAddr = String(r.paymentToAddress ?? "");
               const addrOut = sensitiveReveal ? toAddr || "—" : maskSensitive(toAddr);
               const hasProof = Boolean(String((r as unknown as { paymentProofDataUrl?: unknown } | null)?.paymentProofDataUrl ?? "").trim());
-              if (!tx) return <span className="font-mono">{chain || "—"} · {addrOut} · {hasProof ? "已上传截图" : "缺 TxHash"}</span>;
+              if (!tx) return <span className="ui-sensitive font-mono">{chain || "—"} · {addrOut} · {hasProof ? "已上传截图" : "缺 TxHash"}</span>;
               return (
-                <span className="font-mono">
+                <span className="ui-sensitive font-mono">
                   {chain || "—"} · {addrOut}
                   {!sensitiveReveal ? (
                     <>
@@ -5649,22 +5932,45 @@ export default async function AdminDashboard({
               {r.paymentCheckError ? ` · ${r.paymentCheckError}` : ""}
             </div>
           ) : null}
-          {r.paymentProofDataUrl ? (
-            sensitiveReveal ? (
-              <div className="mt-2 overflow-hidden rounded-xl border border-zinc-200 bg-white">
-                <img src={String(r.paymentProofDataUrl)} alt="转账截图" className="h-auto w-full object-contain" />
-              </div>
-            ) : (
-              <div className="mt-2 rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-[11px] font-medium text-zinc-600">
-                已上传转账截图（解锁后可查看）
-              </div>
-            )
+          {proofHas ? (
+            <div className="mt-2">
+              {!sensitiveReveal ? (
+                <Link
+                  href={withModal(workbenchReturnTo, "reveal_sensitive")}
+                  scroll={false}
+                  className="group relative block overflow-hidden rounded-xl border border-zinc-200 bg-white"
+                  aria-label="解锁后查看转账截图"
+                >
+                  <img src={proofUrl} alt="转账截图缩略图" className="h-28 w-full object-cover blur-[10px] opacity-70" />
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <div className="rounded-full border border-black/10 bg-white/85 px-3 py-1 text-[11px] font-semibold text-zinc-800 shadow-sm backdrop-blur-md">
+                      解锁后查看
+                    </div>
+                  </div>
+                </Link>
+              ) : (
+                <Link
+                  href={proofViewHref}
+                  scroll={false}
+                  className="group relative block overflow-hidden rounded-xl border border-zinc-200 bg-white"
+                  aria-label="查看转账截图"
+                >
+                  <img src={proofUrl} alt="转账截图缩略图" className="h-28 w-full object-cover" />
+                  <div className="pointer-events-none absolute inset-0 flex items-end justify-end p-2 opacity-0 transition-opacity group-hover:opacity-100">
+                    <div className="rounded-full border border-black/10 bg-white/85 px-3 py-1 text-[11px] font-semibold text-zinc-800 shadow-sm backdrop-blur-md">
+                      点击查看
+                    </div>
+                  </div>
+                </Link>
+              )}
+            </div>
           ) : null}
           {renderWorkbenchTagPills(buildWorkbenchPaymentTags({ r, includeMissing: true }))}
         </div>
         {renderWorkbenchExerciseActions({
           id: r.id,
           paymentTxHash: String(r.paymentTxHash ?? ""),
+          paymentAmountUsdt: (r.paymentAmountUsdt ?? null) as Prisma.Decimal | null,
           status: String(r.status ?? ""),
           hasEmployeeProof: Boolean(String(r.paymentProofDataUrl ?? "").trim()) && String(r.paymentProofUploadedByRole ?? "") === "EMPLOYEE",
         })}
@@ -5707,7 +6013,7 @@ export default async function AdminDashboard({
             </div>
             <div className="rounded-xl bg-[#f8fafc] px-3 py-2">
               <div className="text-[11px] font-semibold text-zinc-500">回购金额</div>
-              <div className="mt-0.5 truncate text-sm font-semibold text-[#059669]">
+              <div className="ui-sensitive mt-0.5 truncate text-sm font-semibold text-[#059669]">
                 {formatMoney(r.totalCost, currency, baseCurrency)}
               </div>
             </div>
@@ -6596,19 +6902,15 @@ export default async function AdminDashboard({
             />
             <label className="flex flex-col gap-2">
               <span className="text-xs text-zinc-500">关联员工</span>
-              <select
-                name="employeeId"
-                className="h-10 rounded-xl border border-zinc-200 bg-white px-3 text-sm text-zinc-900 outline-none focus:border-zinc-300"
-                defaultValue={opsEmployees[0]?.id ?? ""}
-                required
-              >
-                {opsEmployees.map((e) => (
-                  <option key={e.id} value={e.id}>
-                    {e.name} · {e.department} ·{" "}
-                    {e.status === "ACTIVE" ? "在职" : "离职"}
-                  </option>
-                ))}
-              </select>
+              <EmployeePicker
+                employees={opsEmployees.map((e) => ({
+                  id: e.id,
+                  name: e.name,
+                  department: e.department,
+                  status: e.status === "ACTIVE" ? "ACTIVE" : "TERMINATED",
+                }))}
+                defaultEmployeeId={opsEmployees[0]?.id ?? ""}
+              />
             </label>
 
             <div className="grid grid-cols-2 gap-3">
@@ -8016,6 +8318,7 @@ export default async function AdminDashboard({
                           : vestingType === "CUSTOM_INSTALLMENTS"
                             ? `自定义分期（${Number.isFinite(duration) ? duration : "—"} 月 / ${Number.isFinite(installments) ? installments : "—"} 期）`
                             : "—";
+                      const exercises = grantHistoryExercisesByGrantId.get(g.id) ?? [];
                       return (
                         <div
                           key={g.id}
@@ -8034,11 +8337,268 @@ export default async function AdminDashboard({
                           <div className="mt-1 text-xs text-zinc-600">
                             创建人 {audit ? audit.requestedByUser.email : "—"}
                           </div>
+
+                          {exercises.length > 0 ? (
+                            <div className="mt-3 rounded-xl border border-black/5 bg-white px-3 py-2">
+                              <div className="text-[11px] font-semibold text-zinc-600">行权留痕</div>
+                              <div className="mt-2 flex flex-col gap-2">
+                                {exercises.slice(0, 3).map((ex) => {
+                                  const tx = String(ex.paymentTxHash ?? "").trim();
+                                  const chain = String(ex.paymentChain ?? "").trim();
+                                  const proofUrl = String(ex.paymentProofDataUrl ?? "").trim();
+                                  const proofHas = Boolean(proofUrl);
+                                  const proofStatus = ex.paymentProofConfirmedAt
+                                    ? "截图已确认"
+                                    : proofHas
+                                      ? "已上传截图（待确认）"
+                                      : "";
+                                  const grantHistoryReturnTo = adminHref({ dept, q, st: status, edit, emp, cr: crId, crst, risk, tag, ccy: currency, lang, modal: "grant_history" });
+                                  const proofViewHref = withModal(
+                                    withParam(withParam(adminHref({ dept, q, st: status, edit, emp, cr: crId, crst, risk, tag, ccy: currency, lang, modal }), "pid", ex.id), "back", grantHistoryReturnTo),
+                                    "exercise_proof",
+                                  );
+                                  return (
+                                    <div key={ex.id} className="rounded-xl border border-black/5 bg-[#f8fafc] px-3 py-2">
+                                      <div className="flex flex-wrap items-center justify-between gap-2">
+                                        <div className="text-xs font-medium text-zinc-900">
+                                          {formatInt(ex.requestedShares)} 股 · {String(ex.status ?? "")}
+                                        </div>
+                                        <div className="text-[11px] text-zinc-500">{formatDateTime(ex.createdAt, lang)}</div>
+                                      </div>
+                                      <div className="mt-1 text-[11px] text-zinc-600">
+                                        {tx ? (
+                                          <span className="ui-sensitive font-mono">
+                                            {chain || "—"} · {sensitiveReveal ? `${tx.slice(0, 10)}…${tx.slice(-8)}` : maskSensitive(tx)}
+                                          </span>
+                                        ) : proofStatus ? (
+                                          <span className="ui-sensitive">{proofStatus}</span>
+                                        ) : (
+                                          <span className="text-zinc-500">未提供 TxHash / 截图</span>
+                                        )}
+                                      </div>
+                                      {proofHas ? (
+                                        <div className="mt-2">
+                                          {!sensitiveReveal ? (
+                                            <Link
+                                              href={withModal(adminHref({ dept, q, st: status, edit, emp, cr: crId, crst, risk, tag, ccy: currency, lang, modal }), "reveal_sensitive")}
+                                              scroll={false}
+                                              className="group relative block overflow-hidden rounded-xl border border-black/5 bg-white"
+                                            >
+                                              <img src={proofUrl} alt="转账截图缩略图" className="h-24 w-full object-cover blur-[10px] opacity-70" />
+                                              <div className="absolute inset-0 flex items-center justify-center">
+                                                <div className="rounded-full border border-black/10 bg-white/85 px-3 py-1 text-[11px] font-semibold text-zinc-800 shadow-sm backdrop-blur-md">
+                                                  解锁后查看
+                                                </div>
+                                              </div>
+                                            </Link>
+                                          ) : (
+                                            <Link
+                                              href={proofViewHref}
+                                              scroll={false}
+                                              className="group relative block overflow-hidden rounded-xl border border-black/5 bg-white"
+                                            >
+                                              <img src={proofUrl} alt="转账截图缩略图" className="h-24 w-full object-cover" />
+                                              <div className="pointer-events-none absolute inset-0 flex items-end justify-end p-2 opacity-0 transition-opacity group-hover:opacity-100">
+                                                <div className="rounded-full border border-black/10 bg-white/85 px-3 py-1 text-[11px] font-semibold text-zinc-800 shadow-sm backdrop-blur-md">
+                                                  点击查看
+                                                </div>
+                                              </div>
+                                            </Link>
+                                          )}
+                                        </div>
+                                      ) : null}
+                                    </div>
+                                  );
+                                })}
+                                {exercises.length > 3 ? (
+                                  <div className="text-[11px] text-zinc-500">仅展示最近 3 条行权记录</div>
+                                ) : null}
+                              </div>
+                            </div>
+                          ) : null}
                         </div>
                       );
                     })}
                   </div>
                 )}
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {modal === "exercise_proof" && proofViewRequest ? (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6">
+            <Link
+              href={proofBack}
+              className="absolute inset-0 bg-black/30 ui-overlay-in"
+              aria-label="关闭"
+              scroll={false}
+            >
+              <span className="sr-only">关闭</span>
+            </Link>
+            <div className="relative z-10 w-full max-w-3xl max-h-[calc(100vh-2rem)] flex flex-col overflow-hidden rounded-2xl bg-white shadow-2xl ui-modal-in">
+              <div className="shrink-0 flex items-start justify-between gap-4 border-b border-black/5 bg-white px-5 py-4 backdrop-blur-md">
+                <div className="min-w-0">
+                  <div className="text-sm font-semibold text-zinc-900">支付信息</div>
+                  <div className="mt-1 text-xs text-zinc-600">
+                    {proofViewRequest.employee.name} · {proofViewRequest.employee.department} · {proofViewRequest.grant?.agreementNo ?? "—"} · {formatInt(proofViewRequest.requestedShares)} 股
+                  </div>
+                </div>
+                <Link
+                  href={proofBack}
+                  className="btn-press btn-ripple shrink-0 rounded-lg border border-black/5 bg-white/70 px-3 py-1.5 text-xs font-semibold text-zinc-900 hover:bg-white"
+                  scroll={false}
+                >
+                  关闭
+                </Link>
+              </div>
+              <div className="flex-1 overflow-auto px-5 py-4">
+                <div className="rounded-xl border border-black/5 bg-[#f8fafc] px-4 py-3 text-xs text-zinc-700">
+                  <div>提交时间：{formatDateTime(proofViewRequest.createdAt, lang)}</div>
+                  <div>
+                    上传：{proofViewRequest.paymentProofUploadedAt ? formatDateTime(proofViewRequest.paymentProofUploadedAt, lang) : "—"} ·{" "}
+                    {String(proofViewRequest.paymentProofUploadedByRole ?? "").trim() || "—"}
+                  </div>
+                  <div>
+                    确认：{proofViewRequest.paymentProofConfirmedAt ? formatDateTime(proofViewRequest.paymentProofConfirmedAt, lang) : "—"} ·{" "}
+                    {String(proofViewRequest.paymentProofConfirmedByRole ?? "").trim() || "—"}
+                  </div>
+                  <div className="ui-sensitive font-mono">
+                    {String(proofViewRequest.paymentChain ?? "").trim() || "—"} ·{" "}
+                    {sensitiveReveal ? String(proofViewRequest.paymentToAddress ?? "").trim() || "—" : maskSensitive(String(proofViewRequest.paymentToAddress ?? ""))} ·{" "}
+                    {String(proofViewRequest.paymentTxHash ?? "").trim()
+                      ? sensitiveReveal
+                        ? `${String(proofViewRequest.paymentTxHash).slice(0, 10)}…${String(proofViewRequest.paymentTxHash).slice(-8)}`
+                        : maskSensitive(String(proofViewRequest.paymentTxHash))
+                      : "无 TxHash"}
+                  </div>
+                </div>
+
+                {(() => {
+                  const proofUrl = String(proofViewRequest.paymentProofDataUrl ?? "").trim();
+                  if (!proofUrl) {
+                    return (
+                      <div className="mt-3 rounded-xl border border-black/5 bg-zinc-50 px-4 py-3 text-sm text-zinc-500">
+                        未找到截图
+                      </div>
+                    );
+                  }
+                  if (!sensitiveReveal) {
+                    return (
+                      <div className="mt-3 overflow-hidden rounded-2xl border border-black/5 bg-white">
+                        <div className="relative">
+                          <img src={proofUrl} alt="转账截图缩略图" className="h-64 w-full object-cover blur-[10px] opacity-70" />
+                          <div className="absolute inset-0 flex items-center justify-center">
+                            <Link
+                              href={withModal(adminHref({ dept, q, st: status, edit, emp, cr: crId, crst, risk, tag, ccy: currency, lang, modal }), "reveal_sensitive")}
+                              className="btn-press btn-ripple rounded-full border border-black/10 bg-white/85 px-4 py-2 text-xs font-semibold text-zinc-900 shadow-sm backdrop-blur-md"
+                              scroll={false}
+                            >
+                              解锁后查看
+                            </Link>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  }
+                  return (
+                    <div className="mt-3 overflow-hidden rounded-2xl border border-black/5 bg-white">
+                      <img src={proofUrl} alt="转账截图" className="h-auto w-full object-contain" />
+                    </div>
+                  );
+                })()}
+
+                {sensitiveReveal ? (
+                  <div className="mt-4 rounded-2xl border border-black/5 bg-[#f8fafc] p-4">
+                    <div className="text-xs font-semibold text-zinc-900">管理员可编辑</div>
+                    <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+                      <form action={updateExercisePaymentMeta} className="rounded-xl border border-black/5 bg-white p-3" data-lock-submit="1">
+                        <input type="hidden" name="lang" value={lang} />
+                        <input type="hidden" name="id" value={proofViewRequest.id} />
+                        <input
+                          type="hidden"
+                          name="returnTo"
+                          value={withModal(withParam(withParam(proofBack, "pid", proofViewRequest.id), "back", proofBack), "exercise_proof")}
+                        />
+                        <input type="hidden" name="op" value="save_tx" />
+                        <div className="text-[11px] font-semibold text-zinc-600">TxHash</div>
+                        <div className="mt-2 grid grid-cols-1 gap-2">
+                          <select
+                            name="chain"
+                            defaultValue={String(proofViewRequest.paymentChain ?? "").trim() || "BNB"}
+                            className="h-10 rounded-xl border border-zinc-200 bg-white px-3 text-sm text-zinc-900 outline-none focus:border-zinc-300"
+                          >
+                            <option value="BNB">BNB</option>
+                            <option value="TRX">TRX</option>
+                          </select>
+                          <input
+                            name="txHash"
+                            defaultValue={String(proofViewRequest.paymentTxHash ?? "").trim()}
+                            placeholder="留空表示不填写"
+                            className="h-10 w-full rounded-xl border border-zinc-200 bg-white px-3 text-sm text-zinc-900 outline-none ring-0 focus:border-zinc-300"
+                          />
+                        </div>
+                        <div className="mt-3 flex items-center justify-end gap-2">
+                          <button className="btn-press btn-ripple inline-flex h-10 touch-manipulation items-center justify-center rounded-xl bg-zinc-900 px-4 text-sm font-semibold text-white hover:bg-zinc-800">
+                            保存
+                          </button>
+                        </div>
+                      </form>
+
+                      <div className="rounded-xl border border-black/5 bg-white p-3">
+                        <div className="text-[11px] font-semibold text-zinc-600">转账截图</div>
+                        <form action={updateExercisePaymentMeta} className="mt-2 flex flex-col gap-2" encType="multipart/form-data" data-lock-submit="1">
+                          <input type="hidden" name="lang" value={lang} />
+                          <input type="hidden" name="id" value={proofViewRequest.id} />
+                          <input
+                            type="hidden"
+                            name="returnTo"
+                            value={withModal(withParam(withParam(proofBack, "pid", proofViewRequest.id), "back", proofBack), "exercise_proof")}
+                          />
+                          <input type="hidden" name="op" value="upload_proof" />
+                          <input
+                            type="file"
+                            name="paymentProof"
+                            accept="image/*"
+                            className="h-10 w-full rounded-xl border border-zinc-200 bg-white px-3 text-sm text-zinc-900 file:mr-3 file:rounded-xl file:border-0 file:bg-zinc-100 file:px-3 file:py-2 file:text-sm file:font-semibold file:text-zinc-900"
+                          />
+                          <button className="btn-press btn-ripple inline-flex h-10 touch-manipulation items-center justify-center rounded-xl bg-zinc-900 px-4 text-sm font-semibold text-white hover:bg-zinc-800">
+                            上传并替换
+                          </button>
+                        </form>
+
+                        <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2">
+                          <form action={updateExercisePaymentMeta} data-lock-submit="1">
+                            <input type="hidden" name="lang" value={lang} />
+                            <input type="hidden" name="id" value={proofViewRequest.id} />
+                            <input
+                              type="hidden"
+                              name="returnTo"
+                              value={withModal(withParam(withParam(proofBack, "pid", proofViewRequest.id), "back", proofBack), "exercise_proof")}
+                            />
+                            <input type="hidden" name="op" value="clear_tx" />
+                            <button className="btn-press btn-ripple inline-flex h-10 w-full touch-manipulation items-center justify-center rounded-xl border border-black/5 bg-white px-4 text-sm font-semibold text-zinc-900 hover:bg-zinc-50">
+                              清空 TxHash
+                            </button>
+                          </form>
+                          <form action={updateExercisePaymentMeta} data-lock-submit="1">
+                            <input type="hidden" name="lang" value={lang} />
+                            <input type="hidden" name="id" value={proofViewRequest.id} />
+                            <input
+                              type="hidden"
+                              name="returnTo"
+                              value={withModal(withParam(withParam(proofBack, "pid", proofViewRequest.id), "back", proofBack), "exercise_proof")}
+                            />
+                            <input type="hidden" name="op" value="clear_proof" />
+                            <button className="btn-press btn-ripple inline-flex h-10 w-full touch-manipulation items-center justify-center rounded-xl border border-black/5 bg-white px-4 text-sm font-semibold text-zinc-900 hover:bg-zinc-50">
+                              删除截图
+                            </button>
+                          </form>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
               </div>
             </div>
           </div>
@@ -8790,7 +9350,7 @@ export default async function AdminDashboard({
 
   function renderHeader() {
     return (
-      <div className="ui-ambient rounded-2xl border border-black/5 bg-white/70 px-4 py-3 shadow-sm backdrop-blur-md transition-shadow hover:shadow-md">
+      <div className="rounded-2xl border border-black/5 bg-white px-4 py-3 shadow-sm transition-shadow hover:shadow-md">
         <AdminHeader
           lang={lang}
           title={tr("ESOP管理后台", "ESOP管理後台", "ESOP Admin Dashboard")}

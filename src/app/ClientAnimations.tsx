@@ -2718,9 +2718,13 @@ export function ExerciseRequestForm({
   const [chain, setChain] = useState<"BNB" | "TRX">("BNB");
   const [txHash, setTxHash] = useState<string>("");
   const [hasProof, setHasProof] = useState(false);
+  const [proofPreviewUrl, setProofPreviewUrl] = useState<string | null>(null);
+  const [proofFileName, setProofFileName] = useState("");
   const [clamped, setClamped] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const submittingRef = useRef(false);
+  const proofInputRef = useRef<HTMLInputElement | null>(null);
+  const proofObjectUrlRef = useRef<string | null>(null);
   const toastSeqRef = useRef(0);
   const [netToast, setNetToast] = useState<{ id: string; title: string; lines: string[] } | null>(null);
   const [cooldownSec, setCooldownSec] = useState(0);
@@ -2838,8 +2842,29 @@ export function ExerciseRequestForm({
   const qrSrc = payTo
     ? `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(payTo)}`
     : "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==";
+  const needPayment = costUsd > 0.000001;
+  const stepShown: 1 | 2 = needPayment ? step : 1;
   const canNext = safeShares >= 1;
-  const canSubmit = Boolean(payTo) && safeShares >= 1 && (Boolean(txHash.trim()) || hasProof);
+  const canSubmit = safeShares >= 1 && (!needPayment || Boolean(payTo));
+
+  useEffect(() => {
+    return () => {
+      const url = proofObjectUrlRef.current;
+      if (url) URL.revokeObjectURL(url);
+      proofObjectUrlRef.current = null;
+    };
+  }, []);
+
+  const clearProof = useCallback(() => {
+    const inp = proofInputRef.current;
+    if (inp) inp.value = "";
+    const url = proofObjectUrlRef.current;
+    if (url) URL.revokeObjectURL(url);
+    proofObjectUrlRef.current = null;
+    setProofPreviewUrl(null);
+    setProofFileName("");
+    setHasProof(false);
+  }, []);
 
   const labels =
     lang === "en"
@@ -2854,9 +2879,10 @@ export function ExerciseRequestForm({
           cost: "Exercise cost",
           payTo: "USDT receiving address",
           qr: "QR code",
-          tx: "Payment Tx Hash",
-          proof: "Transfer screenshot",
+          tx: "Payment Tx hash (optional)",
+          proof: "Transfer screenshot (optional)",
           proofHint: "If you can't get TxHash, upload a screenshot as proof.",
+          proofChoiceHint: "Tx hash or screenshot is required (either one).",
           next: "Next",
           back: "Back",
           submit: "Submit",
@@ -2880,9 +2906,10 @@ export function ExerciseRequestForm({
             copy: "複製",
             copied: "已複製",
             copyFailed: "複製失敗",
-            tx: "打款 TxHash",
-            proof: "轉帳截圖（可選）",
+            tx: "打款 TxHash（可選）",
+            proof: "轉帳截圖",
             proofHint: "拿不到 TxHash 時，可上傳截圖作為憑證。",
+            proofChoiceHint: "TxHash 與截圖二選一（至少提供一個）。",
             next: "下一步",
             back: "上一步",
             submit: "提交",
@@ -2902,9 +2929,10 @@ export function ExerciseRequestForm({
             cost: "行权成本",
             payTo: "USDT 收款地址",
             qr: "收款二维码",
-            tx: "打款 TxHash",
-            proof: "转账截图（可选）",
+            tx: "打款 TxHash（可选）",
+            proof: "转账截图",
             proofHint: "拿不到 TxHash 时，可上传截图作为凭证。",
+            proofChoiceHint: "TxHash 和截图二选一（至少提供一个）。",
             next: "下一步",
             back: "上一步",
             submit: "提交",
@@ -3170,6 +3198,7 @@ export function ExerciseRequestForm({
         data-ex-max={max}
         data-ex-usdt-bnb={usdtBnbAddress}
         data-ex-usdt-trx={usdtTrxAddress}
+        data-ex-need-pay={needPayment ? "1" : "0"}
         data-ex-grants={JSON.stringify(
           orderedGrants.map((g) => ({
             id: g.id,
@@ -3312,27 +3341,29 @@ export function ExerciseRequestForm({
       />
       <input id={`ex-amount-${uid}`} type="hidden" name="amountUsdt" value={Number(costUsd.toFixed(2))} />
 
-      <div className="rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-xs text-zinc-700">
-        <div className="flex flex-wrap items-center gap-2">
-          <span
-            className={`rounded-full border px-2 py-0.5 font-medium ${
-              step === 1 ? "border-indigo-200 bg-indigo-50 text-indigo-700" : "border-zinc-200 bg-white text-zinc-700"
-            }`}
-          >
-            {labels.step1}
-          </span>
-          <span className="text-zinc-400">→</span>
-          <span
-            className={`rounded-full border px-2 py-0.5 font-medium ${
-              step === 2 ? "border-indigo-200 bg-indigo-50 text-indigo-700" : "border-zinc-200 bg-white text-zinc-700"
-            }`}
-          >
-            {labels.step2}
-          </span>
+      {needPayment ? (
+        <div className="rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-xs text-zinc-700">
+          <div className="flex flex-wrap items-center gap-2">
+            <span
+              className={`rounded-full border px-2 py-0.5 font-medium ${
+                stepShown === 1 ? "border-indigo-200 bg-indigo-50 text-indigo-700" : "border-zinc-200 bg-white text-zinc-700"
+              }`}
+            >
+              {labels.step1}
+            </span>
+            <span className="text-zinc-400">→</span>
+            <span
+              className={`rounded-full border px-2 py-0.5 font-medium ${
+                stepShown === 2 ? "border-indigo-200 bg-indigo-50 text-indigo-700" : "border-zinc-200 bg-white text-zinc-700"
+              }`}
+            >
+              {labels.step2}
+            </span>
+          </div>
         </div>
-      </div>
+      ) : null}
 
-      <div id={step1WrapId} className={step === 1 ? "grid grid-cols-1 gap-3" : "hidden grid-cols-1 gap-3"}>
+      <div id={step1WrapId} className={!needPayment || stepShown === 1 ? "grid grid-cols-1 gap-3" : "hidden grid-cols-1 gap-3"}>
         <label className="flex flex-col gap-2">
           <span className="text-xs font-medium text-zinc-600">{labels.shares}</span>
           <div className="flex items-center gap-2">
@@ -3447,30 +3478,44 @@ export function ExerciseRequestForm({
           </div>
         </div>
 
-        <button
-          id={nextBtnId}
-          type="button"
-          className="inline-flex h-11 touch-manipulation items-center justify-center rounded-xl bg-indigo-600 px-4 text-sm font-semibold text-white active:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-40 md:h-10 md:font-medium"
-          disabled={!canNext}
-          onClick={() => {
-            setStep(2);
-          }}
-          onPointerDown={(e) => {
-            if (e.pointerType === "touch") {
+        {needPayment ? (
+          <button
+            id={nextBtnId}
+            type="button"
+            className="inline-flex h-11 touch-manipulation items-center justify-center rounded-xl bg-indigo-600 px-4 text-sm font-semibold text-white active:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-40 md:h-10 md:font-medium"
+            disabled={!canNext}
+            onClick={() => {
+              setStep(2);
+            }}
+            onPointerDown={(e) => {
+              if (e.pointerType === "touch") {
+                e.preventDefault();
+                setStep(2);
+              }
+            }}
+            onTouchStart={(e) => {
               e.preventDefault();
               setStep(2);
-            }
-          }}
-          onTouchStart={(e) => {
-            e.preventDefault();
-            setStep(2);
-          }}
-        >
-          {labels.next}
-        </button>
+            }}
+          >
+            {labels.next}
+          </button>
+        ) : (
+          <div className="sticky bottom-0 z-10 flex items-center gap-2 rounded-xl bg-white/90 pb-[env(safe-area-inset-bottom)] pt-2 backdrop-blur-md md:static md:bg-transparent md:pb-0 md:pt-0 md:backdrop-blur-none">
+            <button
+              id={submitBtnId}
+              className="inline-flex h-11 flex-1 touch-manipulation items-center justify-center rounded-xl bg-indigo-600 px-4 text-sm font-semibold text-white active:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-40"
+              disabled={submitting || cooldownSec > 0 || !canSubmit}
+              aria-busy={submitting || cooldownSec > 0}
+            >
+              {submitting ? labels.submitting : cooldownSec > 0 ? `${labels.submit} (${cooldownSec}s)` : labels.submit}
+            </button>
+          </div>
+        )}
       </div>
 
-      <div id={step2WrapId} className={step === 2 ? "grid grid-cols-1 gap-3" : "hidden grid-cols-1 gap-3"}>
+      {needPayment ? (
+      <div id={step2WrapId} className={stepShown === 2 ? "grid grid-cols-1 gap-3" : "hidden grid-cols-1 gap-3"}>
         <div className="grid grid-cols-2 gap-3">
           <label
             className="inline-flex h-11 touch-manipulation items-center justify-center gap-2 rounded-xl border border-zinc-200 bg-white px-3 text-sm font-semibold text-zinc-900 active:bg-zinc-50"
@@ -3577,7 +3622,7 @@ export function ExerciseRequestForm({
             onInput={(e) => setTxHash((e.target as HTMLInputElement).value)}
             onChange={(e) => setTxHash(e.target.value)}
             name="txHash"
-            placeholder="0x..."
+            placeholder={lang === "en" ? "Leave empty if not available" : lang === "zh-TW" ? "可留空" : "可留空"}
             className="h-11 rounded-xl border border-zinc-200 bg-white px-3 text-base text-zinc-900 outline-none focus:border-zinc-300 md:h-10 md:text-sm"
             disabled={!payTo}
           />
@@ -3588,16 +3633,73 @@ export function ExerciseRequestForm({
             <span>{labels.proof}</span>
             <InlineTip text={labels.proofHint} />
           </span>
+          <div className="rounded-xl border border-zinc-200 bg-white p-3">
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0 truncate text-[11px] font-medium text-zinc-500">
+                {hasProof ? (proofFileName ? `已选择：${proofFileName}` : "已选择") : "未选择文件"}
+              </div>
+              {hasProof ? (
+                <button
+                  type="button"
+                  className="btn-press inline-flex h-8 shrink-0 items-center justify-center rounded-lg border border-zinc-200 bg-white px-3 text-[11px] font-semibold text-zinc-900 hover:bg-zinc-50"
+                  onClick={clearProof}
+                >
+                  {lang === "en" ? "Remove" : lang === "zh-TW" ? "移除" : "移除"}
+                </button>
+              ) : null}
+            </div>
+            <div className="mt-2 flex items-center gap-2">
+              <button
+                type="button"
+                className="btn-press btn-ripple inline-flex h-10 w-full touch-manipulation items-center justify-center rounded-xl border border-black/5 bg-white px-3 text-sm font-semibold text-zinc-900 active:scale-[0.98] disabled:opacity-50"
+                disabled={!payTo}
+                onClick={() => proofInputRef.current?.click()}
+                onPointerDown={(e) => {
+                  if (!payTo) return;
+                  if (e.pointerType === "touch") {
+                    e.preventDefault();
+                    proofInputRef.current?.click();
+                  }
+                }}
+                onTouchStart={(e) => {
+                  if (!payTo) return;
+                  e.preventDefault();
+                  proofInputRef.current?.click();
+                }}
+              >
+                {lang === "en" ? "Choose image" : lang === "zh-TW" ? "選擇圖片" : "选择图片"}
+              </button>
+            </div>
+            {proofPreviewUrl ? (
+              <div className="mt-3 overflow-hidden rounded-xl border border-black/5 bg-white">
+                <Image
+                  src={proofPreviewUrl}
+                  alt={lang === "en" ? "Transfer proof" : lang === "zh-TW" ? "轉帳截圖" : "转账截图"}
+                  width={720}
+                  height={480}
+                  unoptimized
+                  className="h-auto w-full object-contain"
+                />
+              </div>
+            ) : null}
+          </div>
           <input
+            ref={proofInputRef}
             id={proofId}
             type="file"
             name="paymentProof"
             accept="image/*"
-            className="h-11 rounded-xl border border-zinc-200 bg-white px-3 text-sm text-zinc-900 file:mr-3 file:rounded-lg file:border-0 file:bg-zinc-100 file:px-3 file:py-2 file:text-sm file:font-semibold file:text-zinc-900"
+            className="hidden"
             disabled={!payTo}
             onChange={(e) => {
               const f = e.currentTarget.files?.[0] ?? null;
               setHasProof(Boolean(f));
+              setProofFileName(f?.name ?? "");
+              const prev = proofObjectUrlRef.current;
+              if (prev) URL.revokeObjectURL(prev);
+              const next = f ? URL.createObjectURL(f) : null;
+              proofObjectUrlRef.current = next;
+              setProofPreviewUrl(next);
             }}
           />
         </label>
@@ -3632,6 +3734,7 @@ export function ExerciseRequestForm({
           </button>
         </div>
       </div>
+      ) : null}
       </form>
       {cooldownSec > 0 ? (
         <div className="fixed inset-x-0 bottom-[calc(1rem+env(safe-area-inset-bottom))] z-[60] flex justify-center px-4">

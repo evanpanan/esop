@@ -86,7 +86,7 @@ export default function AdminHeader({
           )}
         </div>
         <div className="break-words text-[11px] text-zinc-500">
-          <span className="font-mono">{currentUserEmail}</span>{" "}
+          <span className="ui-sensitive font-mono">{currentUserEmail}</span>{" "}
           <span className="text-zinc-400">·</span>{" "}
           <span className="font-mono">
             {currentUserRole}

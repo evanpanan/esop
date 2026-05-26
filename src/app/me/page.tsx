@@ -1473,14 +1473,6 @@ export default async function MeDashboard({
                   <div className="mb-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
                     {t.txUsed}
                   </div>
-                ) : err === "MISSING_PAYMENT_PROOF" ? (
-                  <div className="mb-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
-                    {lang === "en"
-                      ? "Please provide TxHash or upload a transfer screenshot."
-                      : lang === "zh-TW"
-                        ? "請填寫 TxHash 或上傳轉帳截圖。"
-                        : "请填写 TxHash 或上传转账截图。"}
-                  </div>
                 ) : err === "INVALID_IMAGE" ? (
                   <div className="mb-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
                     {lang === "en" ? "Invalid screenshot format." : lang === "zh-TW" ? "截圖格式不正確。" : "截图格式不正确。"}
@@ -2047,13 +2039,18 @@ export default async function MeDashboard({
                     <a
                       href={meModalHref({ modal: "exercise" })}
                       data-ex-open
-                      className={`btn-press btn-ripple inline-flex h-11 items-center justify-center rounded-xl px-4 text-xs font-semibold md:h-8 md:px-3 ${
+                      className={`btn-press btn-ripple inline-flex h-11 items-center justify-center rounded-xl px-4 text-sm font-semibold md:h-9 md:px-4 md:text-xs ${
                         remainingVestedToExercise > 0
                           ? "bg-[#2563eb] text-white shadow-[0_10px_30px_rgba(37,99,235,0.22)] hover:bg-[#1d4ed8]"
-                          : "border border-black/5 bg-white/80 text-zinc-700 hover:bg-white"
+                          : "border border-[#2563eb]/25 bg-[#2563eb]/10 text-[#1d4ed8] hover:bg-[#2563eb]/15"
                       }`}
                     >
                       {t.exercise}
+                      {remainingVestedToExercise > 0 ? (
+                        <span className="ml-2 rounded-full bg-white/20 px-2 py-0.5 font-mono text-[11px] tabular-nums text-white/95">
+                          {formatInt(remainingVestedToExercise)}
+                        </span>
+                      ) : null}
                     </a>
                   </div>
                 </div>

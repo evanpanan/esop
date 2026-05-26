@@ -98,7 +98,6 @@ export async function submitEmployeeExercise(input: SubmitEmployeeExerciseInput)
   const chain = input.chain === "TRX" ? "TRX" : "BNB";
   const txHash = String(input.txHash ?? "").trim();
   const paymentProofDataUrl = String(input.paymentProofDataUrl ?? "").trim();
-  if (!txHash && !paymentProofDataUrl) throw domainError(400, "MISSING_PAYMENT_PROOF");
   if (txHash) assertTxHash(chain, txHash);
 
   const settings = await prisma.globalSettings.findFirst({
@@ -110,12 +109,6 @@ export async function submitEmployeeExercise(input: SubmitEmployeeExerciseInput)
     },
   });
   const baseCurrency = (settings?.sharePriceCurrency ?? "USD") as Currency;
-
-  const toAddress =
-    chain === "BNB"
-      ? String(settings?.usdtBnbAddress ?? "").trim()
-      : String(settings?.usdtTrxAddress ?? "").trim();
-  if (!toAddress) throw domainError(400, "MISSING_PAYINFO");
 
   const allGrants = await prisma.grant.findMany({
     where: { employeeId },
@@ -193,9 +186,16 @@ export async function submitEmployeeExercise(input: SubmitEmployeeExerciseInput)
     totalCostBase = totalCostBase.add(g.strikePrice.mul(a.shares));
   }
   const totalCostUsdt = convertMoney(totalCostBase, baseCurrency, "USD");
+  const needPayment = totalCostUsdt.gt(0);
+
+  const toAddress =
+    chain === "BNB"
+      ? String(settings?.usdtBnbAddress ?? "").trim()
+      : String(settings?.usdtTrxAddress ?? "").trim();
+  if (needPayment && !toAddress) throw domainError(400, "MISSING_PAYINFO");
 
   const amountUsdtRaw = String(input.amountUsdtRaw ?? "").trim();
-  if (amountUsdtRaw) {
+  if (needPayment && amountUsdtRaw) {
     let amountUsdt: Prisma.Decimal | null = null;
     try {
       amountUsdt = new Prisma.Decimal(amountUsdtRaw);
@@ -228,8 +228,8 @@ export async function submitEmployeeExercise(input: SubmitEmployeeExerciseInput)
         grantId: singleGrantId,
         requestedShares: shares,
         totalCost: totalCostBase,
-        paymentChain: chain,
-        paymentToAddress: toAddress,
+        paymentChain: needPayment || txHash ? chain : null,
+        paymentToAddress: needPayment ? toAddress : toAddress || null,
         paymentTxHash: txHash || null,
         paymentProofDataUrl: paymentProofDataUrl || null,
         paymentProofUploadedAt: paymentProofDataUrl ? new Date() : null,

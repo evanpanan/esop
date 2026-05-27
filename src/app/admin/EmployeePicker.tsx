@@ -80,7 +80,7 @@ export default function EmployeePicker({
 
       <button
         type="button"
-        className="flex h-10 w-full items-center justify-between gap-2 rounded-xl border border-zinc-200 bg-white px-3 text-sm text-zinc-900 outline-none focus:border-zinc-300"
+        className="btn-press btn-ripple flex h-10 w-full touch-manipulation items-center justify-between gap-2 rounded-xl border border-zinc-200 bg-white px-3 text-sm text-zinc-900 outline-none focus:border-zinc-300 active:scale-[0.99]"
         onPointerDown={(e) => {
           e.preventDefault();
           setOpen((v) => !v);
@@ -101,7 +101,7 @@ export default function EmployeePicker({
       </button>
 
       {open ? (
-        <div className="absolute left-0 right-0 top-11 z-30 overflow-hidden rounded-xl border border-black/5 bg-white shadow-[0_12px_40px_rgba(0,0,0,0.12)]">
+        <div className="absolute left-0 right-0 top-11 z-[90] overflow-hidden rounded-xl border border-black/5 bg-white shadow-[0_12px_40px_rgba(0,0,0,0.12)]">
           <div className="border-b border-black/5 px-3 py-2">
             <input
               value={query}
@@ -153,4 +153,3 @@ export default function EmployeePicker({
     </div>
   );
 }
-

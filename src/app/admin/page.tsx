@@ -5354,7 +5354,7 @@ export default async function AdminDashboard({
           <div className="truncate">均价行权 {avgStrikeLabel}</div>
           <button
             type="button"
-            className="btn-press btn-ripple shrink-0 rounded-xl border border-zinc-200 bg-white px-3 py-1.5 text-xs font-semibold text-zinc-900 active:bg-slate-200"
+            className="btn-press btn-ripple shrink-0 touch-manipulation rounded-xl border border-zinc-200 bg-white px-3 py-1.5 text-xs font-semibold text-zinc-900 active:bg-slate-200"
             data-ledger-open
             data-haptic
             data-emp-id={e.id}
@@ -7424,7 +7424,7 @@ export default async function AdminDashboard({
           <div className="flex flex-wrap items-center gap-2">
             <Link
               href={adminHref({ lp: 1 })}
-              className={`rounded-full px-3 py-1.5 text-xs font-semibold ${
+              className={`btn-press inline-flex touch-manipulation rounded-full px-3 py-1.5 text-xs font-semibold ${
                 !dept && !q && !status
                   ? "bg-[#2563eb]/10 text-[#2563eb]"
                   : "bg-[#f8fafc] text-zinc-700 active:bg-slate-200 md:hover:bg-zinc-50"
@@ -7435,7 +7435,7 @@ export default async function AdminDashboard({
             </Link>
             <Link
               href={adminHref({ dept, q, st: "ACTIVE", lp: 1 })}
-              className={`rounded-full px-3 py-1.5 text-xs font-semibold ${
+              className={`btn-press inline-flex touch-manipulation rounded-full px-3 py-1.5 text-xs font-semibold ${
                 status === "ACTIVE"
                   ? "bg-[#2563eb]/10 text-[#2563eb]"
                   : "bg-[#f8fafc] text-zinc-700 active:bg-slate-200 md:hover:bg-zinc-50"
@@ -7446,7 +7446,7 @@ export default async function AdminDashboard({
             </Link>
             <Link
               href={adminHref({ dept, q, st: "TERMINATED", lp: 1 })}
-              className={`rounded-full px-3 py-1.5 text-xs font-semibold ${
+              className={`btn-press inline-flex touch-manipulation rounded-full px-3 py-1.5 text-xs font-semibold ${
                 status === "TERMINATED"
                   ? "bg-[#2563eb]/10 text-[#2563eb]"
                   : "bg-[#f8fafc] text-zinc-700 active:bg-slate-200 md:hover:bg-zinc-50"
@@ -7459,7 +7459,7 @@ export default async function AdminDashboard({
               <Link
                 key={d}
                 href={adminHref({ dept: d, q, st: status, lp: 1 })}
-                className={`rounded-full px-3 py-1.5 text-xs font-semibold ${
+                className={`btn-press inline-flex touch-manipulation rounded-full px-3 py-1.5 text-xs font-semibold ${
                   dept === d
                     ? "bg-[#2563eb]/10 text-[#2563eb]"
                     : "bg-[#f8fafc] text-zinc-700 active:bg-slate-200 md:hover:bg-zinc-50"

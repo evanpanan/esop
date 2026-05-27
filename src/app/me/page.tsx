@@ -111,7 +111,7 @@ const TEXT = {
     exercise: "申请行权",
     exerciseTitle: "行权申请",
     exerciseHint:
-      "填行权股数 → 按地址打款 USDT → 填 TxHash 或上传截图提交 →（有 TxHash 时）可点“检查到账”校验。",
+      "填行权股数 →（需要打款时）按地址打款 USDT →（可选）填 TxHash / 上传截图 → 提交 →（有 TxHash 时）可点“检查到账”校验。",
     viewCertificate: "查看权证",
     exerciseRecords: "行权记录",
     exerciseRecordsDesc: "可查看每次打款与系统核验结果。",
@@ -161,7 +161,7 @@ const TEXT = {
     exercise: "申請行權",
     exerciseTitle: "行權申請",
     exerciseHint:
-      "填行權股數 → 按地址打款 USDT → 填 TxHash 或上傳截圖提交 →（有 TxHash 時）可點「檢查到帳」校驗。",
+      "填行權股數 →（需要打款時）按地址打款 USDT →（可選）填 TxHash / 上傳截圖 → 提交 →（有 TxHash 時）可點「檢查到帳」校驗。",
     viewCertificate: "查看權證",
     exerciseRecords: "行權記錄",
     exerciseRecordsDesc: "可查看每次打款與系統核驗結果。",
@@ -211,7 +211,7 @@ const TEXT = {
     exercise: "Exercise",
     exerciseTitle: "Exercise request",
     exerciseHint:
-      "Enter shares → pay USDT → paste Tx hash or upload a screenshot → submit → (with TxHash) “Check payment” to verify.",
+      "Enter shares → (if payment required) pay USDT → (optional) paste Tx hash / upload screenshot → submit → (TxHash available) “Check payment” to verify.",
     viewCertificate: "View certificate",
     exerciseRecords: "Exercise history",
     exerciseRecordsDesc: "Payment details and verification results.",
@@ -978,27 +978,38 @@ export default async function MeDashboard({
   }
 
   const completedByGrant = new Map<string, number>();
-  exerciseRequests
-    .filter((r) => r.status === "COMPLETED")
-    .forEach((r) => {
-      if (r.grantId) {
-        const gid = String(r.grantId ?? "");
-        const prev = completedByGrant.get(gid) ?? 0;
-        completedByGrant.set(gid, prev + Number(r.requestedShares ?? 0));
-        return;
-      }
-      const alloc = readAllocationFromPaymentRaw(r.paymentRaw);
-      for (const a of alloc) {
-        const prev = completedByGrant.get(a.grantId) ?? 0;
-        completedByGrant.set(a.grantId, prev + a.shares);
-      }
-    });
+  const reservedByGrant = new Map<string, number>();
+  for (const r of exerciseRequests) {
+    const st = String(r.status ?? "").trim();
+    const isCompleted = st === "COMPLETED";
+    const isReserved = st === "PENDING" || st === "FUNDED" || st === "COMPLETED";
+    if (!isCompleted && !isReserved) continue;
+
+    const add = (m: Map<string, number>, gid: string, v: number) => {
+      if (!gid) return;
+      const n = Math.max(0, Math.floor(Number(v) || 0));
+      if (!n) return;
+      m.set(gid, (m.get(gid) ?? 0) + n);
+    };
+
+    if (r.grantId) {
+      const gid = String(r.grantId ?? "");
+      if (isReserved) add(reservedByGrant, gid, Number(r.requestedShares ?? 0));
+      if (isCompleted) add(completedByGrant, gid, Number(r.requestedShares ?? 0));
+      continue;
+    }
+    const alloc = readAllocationFromPaymentRaw(r.paymentRaw);
+    for (const a of alloc) {
+      if (isReserved) add(reservedByGrant, a.grantId, a.shares);
+      if (isCompleted) add(completedByGrant, a.grantId, a.shares);
+    }
+  }
 
   const exercisableGrants = grants
     .map((g) => {
       const vested = vestedByGrantMap.get(g.id) ?? 0;
-      const exercised = completedByGrant.get(g.id) ?? 0;
-      const remaining = Math.max(0, vested - exercised);
+      const reserved = reservedByGrant.get(g.id) ?? 0;
+      const remaining = Math.max(0, vested - reserved);
       return {
         id: g.id,
         agreementNo: g.agreementNo,
@@ -1010,7 +1021,8 @@ export default async function MeDashboard({
     .filter((g) => g.remainingVestedShares > 0);
 
   const exercisedSharesTotal = Array.from(completedByGrant.values()).reduce((sum, v) => sum + (Number(v) || 0), 0);
-  const remainingVestedToExercise = Math.max(0, vestedShares - exercisedSharesTotal);
+  const reservedSharesTotal = Array.from(reservedByGrant.values()).reduce((sum, v) => sum + (Number(v) || 0), 0);
+  const remainingVestedToExercise = Math.max(0, vestedShares - reservedSharesTotal);
   const nextOverallVestingDate = grants
     .flatMap((g) => g.vestingRecords)
     .filter((v) => v.status === "UNVESTED")
@@ -1493,6 +1505,14 @@ export default async function MeDashboard({
                         ? "安全校驗失敗：應付金額不一致。"
                         : "安全校验失败：应付金额不一致。"}
                   </div>
+                ) : err === "INSUFFICIENT_VESTED" ? (
+                  <div className="mb-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+                    {lang === "en"
+                      ? "Not enough exercisable shares. You may already have pending exercise requests reserving shares."
+                      : lang === "zh-TW"
+                        ? "可行權股數不足。可能已有待處理的行權申請占用額度。"
+                        : "可行权股数不足。可能已有待处理的行权申请占用额度。"}
+                  </div>
                 ) : err === "SUBMITTED" ? null : (
                   <div className="mb-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
                     {`${lang === "en" ? "Error" : "操作失败"}：${err}`}
@@ -1526,7 +1546,7 @@ export default async function MeDashboard({
                   {exerciseSubmittedDetailHref ? (
                     <a
                       href={exerciseSubmittedDetailHref}
-                      className="inline-flex h-10 items-center justify-center rounded-xl border border-zinc-200 bg-white px-4 text-sm font-medium text-zinc-900 hover:bg-zinc-50"
+                      className="btn-press btn-ripple inline-flex h-10 touch-manipulation items-center justify-center rounded-xl border border-zinc-200 bg-white px-4 text-sm font-medium text-zinc-900 active:scale-[0.99] hover:bg-zinc-50"
                     >
                       {lang === "en" ? "View details" : "查看详情"}
                     </a>
@@ -1534,7 +1554,7 @@ export default async function MeDashboard({
                   <a
                     href={exerciseSubmittedDismissHref}
                     data-ex-close
-                    className="inline-flex h-10 items-center justify-center rounded-xl bg-indigo-600 px-4 text-sm font-medium text-white hover:bg-indigo-700"
+                    className="btn-press btn-ripple inline-flex h-10 touch-manipulation items-center justify-center rounded-xl bg-indigo-600 px-4 text-sm font-medium text-white active:scale-[0.99] hover:bg-indigo-700"
                   >
                     {lang === "en" ? "OK" : lang === "zh-TW" ? "知道了" : "知道了"}
                   </a>
@@ -2764,8 +2784,9 @@ export default async function MeDashboard({
                 const forfeited = g.vestingRecords
                   .filter((v) => v.status === "FORFEITED")
                   .reduce((sum, v) => sum + v.shares, 0);
+                const reserved = reservedByGrant.get(g.id) ?? 0;
                 const exercised = completedByGrant.get(g.id) ?? 0;
-                const exercisable = Math.max(0, vested - exercised);
+                const exercisable = Math.max(0, vested - reserved);
                 const schedulePreview = g.vestingRecords;
                 const scheduleForProgress = schedulePreview.filter((v) => v.status !== "FORFEITED");
                 const gDenom = scheduleForProgress.reduce((sum, v) => sum + v.shares, 0);
